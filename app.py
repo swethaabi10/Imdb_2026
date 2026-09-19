@@ -1,16 +1,17 @@
-import os
-import pandas as pd
-import plotly.express as px
 import streamlit as st
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
 
-# Page Configuration
-st.set_page_config(
-    page_title="IMDb Movie Analysis & Visualizations",
-    page_icon="🎬",
-    layout="wide",
-)
+# Set a clean plotting style for Matplotlib/Seaborn for better aesthetics
+plt.style.use('ggplot')
+sns.set_palette('deep')
 
-# Custom CSS for a unique bright mode background
+# --- Page Configuration & CSS ---
+st.set_page_config(layout="wide", page_title="IMDb 2026 Movie Analysis", page_icon="🎬")
+
+# Custom CSS for the unique bright mode background
 st.markdown("""
 <style>
 /* Soft, bright gradient background for the main app */
@@ -41,296 +42,220 @@ h1, h2, h3, h4, p, span {
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🎬 IMDb Movie Data Analysis & Dashboard")
-st.markdown("Explore movie trends, genre statistics, duration insights, and ratings.")
-
-# -----------------------------------------------------------------------------
-# Data Loading (Automatically generates sample data if missing)
-# -----------------------------------------------------------------------------
+# --- Data Loading (Cached for performance) ---
 @st.cache_data
 def load_data(filepath="imdb_2026_movies.csv"):
-    if not os.path.exists(filepath):
-        st.warning(f"'{filepath}' not found. Generating a sample dataset automatically.")
-        sample_data = pd.DataFrame({
-            "Movie Name": ["Sample Action", "Sample Comedy", "Sample Drama", "Epic Sci-Fi"],
-            "Genre": ["Action", "Comedy", "Drama", "Sci-Fi, Adventure"],
-            "Ratings": [8.5, 7.2, 9.0, 8.8],
-            "Voting Counts": [15000, 8000, 25000, 120000],
-            "Duration": [120, 95, 140, 165]
-        })
-        sample_data.to_csv(filepath, index=False)
-    
-    df = pd.read_csv(filepath)
+    try:
+        df = pd.read_csv(filepath)
+        
+        # Rename columns to match the seaborn code logic if they have spaces/caps
+        rename_map = {
+            "Movie Name": "movie_name",
+            "Genre": "genre",
+            "Ratings": "rating",
+            "Voting Counts": "voting_counts",
+            "Duration": "duration_minutes"
+        }
+        df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
+        
+        # Ensure correct data types
+        df['rating'] = pd.to_numeric(df['rating'], errors='coerce')
+        df['voting_counts'] = pd.to_numeric(df['voting_counts'], errors='coerce')
+        df['duration_minutes'] = pd.to_numeric(df['duration_minutes'], errors='coerce')
+        
+        return df
+    except Exception as e:
+        st.error(f"Error loading '{filepath}': {e}")
+        return pd.DataFrame()
 
-    # Clean numeric columns
-    df["Ratings"] = pd.to_numeric(df["Ratings"], errors="coerce")
-    df["Voting Counts"] = pd.to_numeric(df["Voting Counts"], errors="coerce")
-    df["Duration"] = pd.to_numeric(df["Duration"], errors="coerce")
-    
-    return df
+# Load the dataset
+movies_df = load_data()
 
-df_raw = load_data()
+st.title("🎬 IMDb 2026 Data Analysis and Visualizations")
+st.markdown("Explore insights from IMDb's 2026 movie list with interactive filters and dynamic charts.")
 
-if df_raw is not None:
-    # -------------------------------------------------------------------------
-    # Helper DataFrame for Genre-based analysis (handles comma-separated genres)
-    # -------------------------------------------------------------------------
-    df_genre_expanded = df_raw.copy()
-    df_genre_expanded["Genre"] = (
-        df_genre_expanded["Genre"].astype(str).str.split(",")
-    )
-    df_genre_expanded = df_genre_expanded.explode("Genre")
-    df_genre_expanded["Genre"] = df_genre_expanded["Genre"].str.strip()
-    unique_genres = sorted(df_genre_expanded["Genre"].unique().tolist())
+if movies_df.empty:
+    st.warning("No movie data available to display. Please ensure 'imdb_2026_movies.csv' is in the same directory as this script.")
+else:
+    # --- Interactive Filtering Functionality (Sidebar) ---
+    st.sidebar.header("Filter Movies 📊")
+    st.sidebar.markdown("Use the controls below to refine the dataset.")
 
-    # -------------------------------------------------------------------------
-    # Sidebar - Interactive Filtering
-    # -------------------------------------------------------------------------
-    st.sidebar.header("🔍 Interactive Filters")
-    
-    # Genre filter
+    # Ensure 'genre' column is string type
+    movies_df['genre'] = movies_df['genre'].astype(str)
+
+    # Extract unique genres (handles comma-separated genres robustly)
+    all_genres = set()
+    for g in movies_df['genre'].dropna():
+        for token in str(g).split(','):
+            all_genres.add(token.strip())
+    all_genres = sorted(list(all_genres))
+
     selected_genres = st.sidebar.multiselect(
-        "Select Genre(s):", options=unique_genres, default=[]
-    )
-    
-    # Rating filter
-    min_rating, max_rating = float(df_raw["Ratings"].min()), float(df_raw["Ratings"].max())
-    rating_range = st.sidebar.slider(
-        "Rating Range:",
-        min_value=min_rating,
-        max_value=max_rating,
-        value=(min_rating, max_rating),
-        step=0.1,
-    )
-    
-    # Duration filter
-    min_dur, max_dur = int(df_raw["Duration"].min()), int(df_raw["Duration"].max())
-    duration_range = st.sidebar.slider(
-        "Duration (Minutes):",
-        min_value=min_dur,
-        max_value=max_dur,
-        value=(min_dur, max_dur),
-    )
-    
-    # Votes filter
-    min_votes, max_votes = int(df_raw["Voting Counts"].min()), int(df_raw["Voting Counts"].max())
-    votes_range = st.sidebar.slider(
-        "Minimum Voting Counts:",
-        min_value=min_votes,
-        max_value=max_votes,
-        value=min_votes,
+        "Select Genre(s):",
+        options=all_genres,
+        default=all_genres
     )
 
-    # Filter application
-    filtered_df = df_raw[
-        (df_raw["Ratings"] >= rating_range[0])
-        & (df_raw["Ratings"] <= rating_range[1])
-        & (df_raw["Duration"] >= duration_range[0])
-        & (df_raw["Duration"] <= duration_range[1])
-        & (df_raw["Voting Counts"] >= votes_range)
-    ]
-    
+    # Filter by genre first
     if selected_genres:
-        filtered_df = filtered_df[
-            filtered_df["Genre"].apply(
-                lambda g: any(
-                    genre in [x.strip() for x in str(g).split(",")]
-                    for genre in selected_genres
-                )
-            )
-        ]
+        filtered_df_genre = movies_df[movies_df['genre'].apply(
+            lambda g: any(sel in str(g) for sel in selected_genres)
+        )].copy()
+    else:
+        filtered_df_genre = movies_df.copy()
 
-    # Quick Stats Overview
-    st.markdown("### 📊 Dataset Summary")
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total Movies", len(filtered_df))
-    col2.metric(
-        "Avg Rating",
-        (f"{filtered_df['Ratings'].mean():.2f}" if not filtered_df.empty else "N/A"),
-    )
-    col3.metric(
-        "Avg Duration",
-        (f"{filtered_df['Duration'].mean():.0f} mins" if not filtered_df.empty else "N/A"),
-    )
-    col4.metric(
-        "Total Votes",
-        (f"{filtered_df['Voting Counts'].sum():,}" if not filtered_df.empty else "N/A"),
-    )
-    st.markdown("---")
-
-    # -------------------------------------------------------------------------
-    # Sequential Layout (Replacing Tabs)
-    # -------------------------------------------------------------------------
-
-    # SECTION 1: Rankings & Highlights
-    st.header("⭐ Rankings & Highlights")
-    st.subheader("Top-Rated Movies (Top 10)")
-    top_rated = filtered_df.sort_values(
-        by=["Ratings", "Voting Counts"], ascending=[False, False]
-    ).head(10)
-    fig1 = px.bar(
-        top_rated,
-        x="Ratings",
-        y="Movie Name",
-        orientation="h",
-        color="Ratings",
-        text="Ratings",
-        title="Top 10 Highest Rated Movies",
-        labels={"Movie Name": "Movie Title", "Ratings": "Rating"},
-    )
-    fig1.update_layout(yaxis={"categoryorder": "total ascending"})
-    st.plotly_chart(fig1, use_container_width=True)
-
-    col_left, col_right = st.columns(2)
-    with col_left:
-        st.subheader("Top-Voted Movies (Top 10)")
-        top_voted = filtered_df.sort_values(
-            by="Voting Counts", ascending=False
-        ).head(10)
-        fig9 = px.bar(
-            top_voted,
-            x="Voting Counts",
-            y="Movie Name",
-            orientation="h",
-            color="Voting Counts",
-            title="Top 10 Most Voted Movies",
+    # Dynamic sliders based on the currently genre-filtered data
+    if not filtered_df_genre.empty:
+        min_rating_val, max_rating_val = float(filtered_df_genre['rating'].min()), float(filtered_df_genre['rating'].max())
+        rating_range = st.sidebar.slider(
+            "Rating Range:",
+            min_value=min_rating_val, max_value=max_rating_val,
+            value=(min_rating_val, max_rating_val), step=0.1, format="%.1f"
         )
-        fig9.update_layout(yaxis={"categoryorder": "total ascending"})
-        st.plotly_chart(fig9, use_container_width=True)
-
-    with col_right:
-        st.subheader("Duration Extremes (Shortest & Longest)")
-        longest = filtered_df.sort_values(
-            by="Duration", ascending=False
-        ).head(5)
-        shortest = filtered_df.sort_values(by="Duration", ascending=True).head(5)
-        extremes = pd.concat([longest, shortest]).drop_duplicates()
-        fig8 = px.bar(
-            extremes,
-            x="Duration",
-            y="Movie Name",
-            orientation="h",
-            color="Duration",
-            title="Shortest & Longest Movies (Minutes)",
-        )
-        fig8.update_layout(yaxis={"categoryorder": "total ascending"})
-        st.plotly_chart(fig8, use_container_width=True)
         
-    st.markdown("---")
-
-    # SECTION 2: Genre Analysis
-    st.header("🎭 Genre Analysis")
-    filtered_genre_df = df_genre_expanded[
-        df_genre_expanded["Movie Name"].isin(filtered_df["Movie Name"])
-    ]
-    
-    col_g1, col_g2 = st.columns(2)
-    with col_g1:
-        st.subheader("Popular Genres (Movie Count)")
-        genre_counts = (
-            filtered_genre_df["Genre"]
-            .value_counts()
-            .reset_index(name="Movie Count")
+        min_duration_val, max_duration_val = int(filtered_df_genre['duration_minutes'].min()), int(filtered_df_genre['duration_minutes'].max())
+        duration_range = st.sidebar.slider(
+            "Duration (minutes):",
+            min_value=min_duration_val, max_value=max_duration_val,
+            value=(min_duration_val, max_duration_val), step=5
         )
-        fig2 = px.pie(
-            genre_counts,
-            values="Movie Count",
-            names="Genre",
-            title="Genre Distribution & Popularity",
-            hole=0.3,
-            color_discrete_sequence=px.colors.qualitative.Pastel
-        )
-        st.plotly_chart(fig2, use_container_width=True)
-
-    with col_g2:
-        st.subheader("Voting Patterns Across Genres")
-        genre_votes = (
-            filtered_genre_df.groupby("Genre")["Voting Counts"]
-            .mean()
-            .reset_index()
-            .sort_values(by="Voting Counts", ascending=False)
-        )
-        fig4 = px.bar(
-            genre_votes,
-            x="Genre",
-            y="Voting Counts",
-            color="Voting Counts",
-            title="Average Voting Count per Genre",
-        )
-        st.plotly_chart(fig4, use_container_width=True)
-
-    st.markdown("---")
-
-    # SECTION 3: Duration & Ratings
-    st.header("⏱️ Duration & Ratings")
-    col_d1, col_d2 = st.columns(2)
-    with col_d1:
-        st.subheader("Duration Insights Across Genres")
-        genre_duration = (
-            filtered_genre_df.groupby("Genre")["Duration"]
-            .mean()
-            .reset_index()
-            .sort_values(by="Duration", ascending=False)
-        )
-        fig3 = px.bar(
-            genre_duration,
-            x="Genre",
-            y="Duration",
-            color="Duration",
-            title="Average Duration (Minutes) by Genre",
-        )
-        st.plotly_chart(fig3, use_container_width=True)
-
-    with col_d2:
-        st.subheader("Genre vs. Ratings")
-        genre_ratings = (
-            filtered_genre_df.groupby("Genre")["Ratings"]
-            .mean()
-            .reset_index()
-            .sort_values(by="Ratings", ascending=False)
-        )
-        fig7 = px.bar(
-            genre_ratings,
-            x="Genre",
-            y="Ratings",
-            color="Ratings",
-            title="Average Ratings by Genre",
-        )
-        st.plotly_chart(fig7, use_container_width=True)
         
-    st.markdown("---")
+        min_votes_val, max_votes_val = int(filtered_df_genre['voting_counts'].min()), int(filtered_df_genre['voting_counts'].max())
+        vote_range = st.sidebar.slider(
+            "Voting Counts:",
+            min_value=min_votes_val, max_value=max_votes_val,
+            value=(min_votes_val, max_votes_val), step=1000
+        )
+    else: 
+        rating_range = st.sidebar.slider("Rating Range:", 0.0, 10.0, (0.0, 10.0), step=0.1)
+        duration_range = st.sidebar.slider("Duration (minutes):", 0, 300, (0, 300), step=5)
+        vote_range = st.sidebar.slider("Voting Counts:", 0, 1000000, (0, 1000000), step=1000)
 
-    # SECTION 4: Distributions
-    st.header("📊 Distributions")
-    st.subheader("Rating Distribution")
-    fig6 = px.histogram(
-        filtered_df,
-        x="Ratings",
-        nbins=20,
-        title="Distribution of Ratings Across Movies",
-        marginal="box",
-        color_discrete_sequence=["#3498db"],
-    )
-    st.plotly_chart(fig6, use_container_width=True)
+    # Apply remaining filters
+    final_filtered_df = filtered_df_genre[
+        (filtered_df_genre['rating'] >= rating_range[0]) &
+        (filtered_df_genre['rating'] <= rating_range[1]) &
+        (filtered_df_genre['duration_minutes'] >= duration_range[0]) &
+        (filtered_df_genre['duration_minutes'] <= duration_range[1]) &
+        (filtered_df_genre['voting_counts'] >= vote_range[0]) &
+        (filtered_df_genre['voting_counts'] <= vote_range[1])
+    ].copy() 
 
-    st.markdown("---")
+    # --- Display Filtered Results ---
+    st.header("Filtered Movie Data 🎥")
+    st.dataframe(final_filtered_df, use_container_width=True, hide_index=True)
+    st.write(f"Displaying **{len(final_filtered_df)}** movies matching your criteria (out of {len(movies_df)} total movies).")
 
-    # SECTION 5: Tabular Data
-    st.header("📋 Tabular Data (Filtered)")
-    st.write(f"Showing **{len(filtered_df)}** matching movies:")
-    st.dataframe(
-        filtered_df[
-            ["Movie Name", "Genre", "Ratings", "Voting Counts", "Duration"]
-        ],
-        use_container_width=True,
-        hide_index=True,
-    )
+    if final_filtered_df.empty:
+        st.info("No movies match the selected filter criteria. Adjust your filters to see results.")
+    else:
+        st.markdown("---")
+        st.header("Interactive Visualizations 📈")
 
-    # Download CSV option
-    csv_data = filtered_df.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        label="📥 Download Filtered Data as CSV",
-        data=csv_data,
-        file_name="filtered_imdb_movies.csv",
-        mime="text/csv",
-    )
+        # Top 10 Movies by Rating and Voting Counts
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("### Top 10 Movies by Rating")
+            top_rated = final_filtered_df.sort_values(by='rating', ascending=False).head(10)
+            fig1, ax1 = plt.subplots(figsize=(8, 5))
+            sns.barplot(x='rating', y='movie_name', data=top_rated, ax=ax1, palette='viridis')
+            ax1.set_xlabel('Rating')
+            ax1.set_ylabel('')
+            plt.tight_layout()
+            st.pyplot(fig1, transparent=True)
+
+        with col2:
+            st.markdown("### Top 10 Movies by Voting Counts")
+            top_voted = final_filtered_df.sort_values(by='voting_counts', ascending=False).head(10)
+            fig2, ax2 = plt.subplots(figsize=(8, 5))
+            sns.barplot(x='voting_counts', y='movie_name', data=top_voted, ax=ax2, palette='cividis')
+            ax2.set_xlabel('Voting Counts')
+            ax2.set_ylabel('')
+            plt.tight_layout()
+            st.pyplot(fig2, transparent=True)
+
+        st.markdown("---")
+        
+        # Genre Distribution
+        st.markdown("### Genre Distribution")
+        # Explode genres just for accurate counts if they are comma-separated
+        genre_expanded = final_filtered_df.copy()
+        genre_expanded['genre'] = genre_expanded['genre'].str.split(',')
+        genre_expanded = genre_expanded.explode('genre')
+        genre_expanded['genre'] = genre_expanded['genre'].str.strip()
+        
+        genre_counts = genre_expanded['genre'].value_counts().sort_values(ascending=False)
+        fig3, ax3 = plt.subplots(figsize=(12, 6))
+        sns.barplot(x=genre_counts.index, y=genre_counts.values, ax=ax3, palette='coolwarm')
+        ax3.set_ylabel('Number of Movies')
+        plt.xticks(rotation=45, ha='right')
+        plt.tight_layout()
+        st.pyplot(fig3, transparent=True)
+
+        st.markdown("---")
+
+        # Average Duration & Voting Trends by Genre
+        col3, col4 = st.columns(2)
+        with col3:
+            st.markdown("### Average Duration by Genre")
+            avg_dur = genre_expanded.groupby('genre')['duration_minutes'].mean().sort_values(ascending=False)
+            fig4, ax4 = plt.subplots(figsize=(8, 6))
+            sns.barplot(x=avg_dur.values, y=avg_dur.index, ax=ax4, palette='plasma')
+            ax4.set_xlabel('Duration (Minutes)')
+            plt.tight_layout()
+            st.pyplot(fig4, transparent=True)
+
+        with col4:
+            st.markdown("### Average Voting Counts by Genre")
+            avg_votes = genre_expanded.groupby('genre')['voting_counts'].mean().sort_values(ascending=False)
+            fig5, ax5 = plt.subplots(figsize=(8, 6))
+            sns.barplot(x=avg_votes.values, y=avg_votes.index, ax=ax5, palette='magma')
+            ax5.set_xlabel('Average Voting Counts')
+            plt.tight_layout()
+            st.pyplot(fig5, transparent=True)
+
+        st.markdown("---")
+
+        # Rating Distribution
+        st.markdown("### Rating Distribution")
+        fig6, ax6 = plt.subplots(figsize=(10, 5))
+        sns.histplot(final_filtered_df['rating'], kde=True, bins=15, ax=ax6, color='#3498db')
+        ax6.set_xlabel('Rating')
+        ax6.set_ylabel('Number of Movies')
+        plt.tight_layout()
+        st.pyplot(fig6, transparent=True)
+
+        st.markdown("---")
+
+        # Duration Extremes
+        st.markdown("### Duration Extremes: Shortest and Longest Movies")
+        shortest = final_filtered_df.loc[final_filtered_df['duration_minutes'].idxmin()]
+        longest = final_filtered_df.loc[final_filtered_df['duration_minutes'].idxmax()]
+
+        col_short, col_long = st.columns(2)
+        with col_short:
+            st.info("#### Shortest Movie 📉")
+            st.write(f"**Movie:** {shortest['movie_name']}\n\n**Genre:** {shortest['genre']}\n\n**Duration:** {shortest['duration_minutes']} minutes\n\n**Rating:** {shortest['rating']}")
+        with col_long:
+            st.warning("#### Longest Movie 📈")
+            st.write(f"**Movie:** {longest['movie_name']}\n\n**Genre:** {longest['genre']}\n\n**Duration:** {longest['duration_minutes']} minutes\n\n**Rating:** {longest['rating']}")
+
+        st.markdown("---")
+
+        # Correlation Analysis: Ratings vs. Voting Counts
+        st.markdown("### Rating vs. Voting Counts (Correlation)")
+        fig10, ax10 = plt.subplots(figsize=(12, 6))
+        sns.scatterplot(
+            x='voting_counts', y='rating', 
+            data=final_filtered_df, ax=ax10, 
+            hue='genre', size='duration_minutes', 
+            sizes=(50, 500), alpha=0.7
+        )
+        ax10.set_xlabel('Voting Counts (Log Scale)')
+        ax10.set_ylabel('Rating')
+        ax10.set_xscale('log')
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize='small')
+        plt.grid(True, which="both", ls="--", alpha=0.5)
+        plt.tight_layout()
+        st.pyplot(fig10, transparent=True)
